@@ -42,12 +42,14 @@ def parse_time(value):
 def load_state():
     if not os.path.exists(STATE_FILE):
         return {"initialized": False, "sent": {}, "uncertain": {},
-                "no_signal_slots": [], "failure_slots": [], "uncertain_alerts": {}}
+                "no_signal_slots": [], "failure_slots": [], "uncertain_alerts": {},
+                "daily_date": None, "daily_signals": {}}
     try:
         with open(STATE_FILE, encoding="utf-8") as f: x = json.load(f)
         if not isinstance(x, dict): raise ValueError("root is not object")
         for k, default in (("initialized", False), ("sent", {}), ("uncertain", {}),
-                           ("no_signal_slots", []), ("failure_slots", []), ("uncertain_alerts", {})):
+                           ("no_signal_slots", []), ("failure_slots", []), ("uncertain_alerts", {}),
+                           ("daily_date", None), ("daily_signals", {})):
             x.setdefault(k, default)
         if not isinstance(x["sent"], dict) or not isinstance(x["uncertain"], dict):
             raise ValueError("signal state malformed")
@@ -55,6 +57,10 @@ def load_state():
             raise ValueError("slot state malformed")
         if not isinstance(x["uncertain_alerts"], dict):
             raise ValueError("uncertain alert state malformed")
+        if x["daily_date"] is not None and not isinstance(x["daily_date"], str):
+            raise ValueError("daily date state malformed")
+        if not isinstance(x["daily_signals"], dict):
+            raise ValueError("daily signal state malformed")
         return x
     except Exception as e:
         raise RuntimeError(f"state.json damaged; refusing reset: {e}") from e
@@ -214,16 +220,37 @@ def main():
         failure_notice(state, slot); save_state(state); raise
     slot = slot_key(generated)
     signals = result["signals"]
-    ids = {s["id"] for s in signals}
+    today = datetime.now(CST).date().isoformat()
+
+    # Migrate the previous ID-based state once, preserving today's known signals.
+    if state["daily_date"] is None:
+        migrated = {}
+        for sid, info in state["sent"].items():
+            stamp = info.get("ts") if isinstance(info, dict) else None
+            if isinstance(stamp, int) and datetime.fromtimestamp(stamp, CST).date().isoformat() == today:
+                symbol = sid.rsplit("-", 1)[0]
+                if symbol in SYMBOLS:
+                    migrated[sid] = symbol
+        state["daily_signals"] = migrated
+        state["daily_date"] = today
+    elif state["daily_date"] != today:
+        state["daily_signals"] = {}
+        state["daily_date"] = today
+
     if not state["initialized"]:
-        stamp = int(time.time())
-        state["sent"] = {sid:{"ts":stamp,"baseline":True} for sid in ids}
+        state["daily_signals"].update({s["id"]: s["symbol"] for s in signals})
         state["initialized"] = True
         state["baseline_generated_at"] = result["generated_at"]
         save_state(state)
-        print(f"Baseline stored ({len(ids)} IDs); historical signals not pushed")
+        print(f"Baseline stored ({len(state['daily_signals'])} daily IDs); historical signals not pushed")
         return
-    if not signals:
+
+    previous_ids = set(state["daily_signals"])
+    for item in signals:
+        state["daily_signals"][item["id"]] = item["symbol"]
+    fresh = [item for item in signals if item["id"] not in previous_ids]
+
+    if not state["daily_signals"]:
         if slot in state["no_signal_slots"] or slot in state["uncertain_alerts"]:
             print(f"No-signal slot already handled: {slot}"); save_state(state); return
         try: push(NO_SIGNAL)
@@ -232,21 +259,22 @@ def main():
             save_state(state); raise RuntimeError(f"No Signal delivery uncertain: {e}") from e
         state["no_signal_slots"].append(slot); save_state(state)
         print(f"No Signal accepted for {slot}"); return
-    fresh = [s for s in signals if s["id"] not in state["sent"] and s["id"] not in state["uncertain"]]
+
     if not fresh:
-        print("No new IDs; existing signals are not a No Signal condition"); save_state(state); return
-    fresh_symbols = {s["symbol"] for s in fresh}
-    ordered = [s for s in SYMBOLS if s in fresh_symbols]
-    body = SEP.join(s.removesuffix("USDT").translate(BOLD) for s in ordered)
-    try: push(body)
-    except UncertainDelivery as e:
-        stamp = int(time.time())
-        for item in fresh: state["uncertain"][item["id"]] = {"ts":stamp,"slot":slot}
+        print(f"No new signals; retained {len(state['daily_signals'])} daily IDs")
         save_state(state)
-        raise RuntimeError(f"delivery uncertain; IDs quarantined against duplicate retry: {e}") from e
-    stamp = int(time.time())
-    for item in fresh: state["sent"][item["id"]] = {"ts":stamp,"slot":slot}
+        return
+
+    daily_symbols = set(state["daily_signals"].values())
+    ordered = [s for s in SYMBOLS if s in daily_symbols]
+    body = SEP.join(s.removesuffix("USDT").translate(BOLD) for s in ordered)
+    try:
+        push(body)
+    except UncertainDelivery as e:
+        save_state(state)
+        raise RuntimeError(f"delivery uncertain; daily signal set retained for the next update: {e}") from e
+
     save_state(state)
-    print(f"Bark accepted {len(fresh)} IDs / {len(ordered)} unique symbols")
+    print(f"Bark accepted cumulative daily set: {len(state['daily_signals'])} IDs / {len(ordered)} unique symbols")
 
 if __name__ == "__main__": main()

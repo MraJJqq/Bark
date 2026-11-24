@@ -101,6 +101,27 @@ jobs:
                           combined[key] = value
               merged[field] = combined
 
+          # Keep the newest day's cumulative signal set; union concurrent updates
+          # only when both writers belong to that same Beijing calendar day.
+          daily_dates = [
+              value for value in (theirs.get("daily_date"), ours.get("daily_date"))
+              if isinstance(value, str)
+          ]
+          if daily_dates:
+              newest_day = max(daily_dates)
+              daily_signals = {}
+              for source in (theirs, ours):
+                  if source.get("daily_date") == newest_day:
+                      values = source.get("daily_signals", {})
+                      if not isinstance(values, dict):
+                          raise SystemExit("Malformed daily_signals during merge")
+                      daily_signals.update(values)
+              merged["daily_date"] = newest_day
+              merged["daily_signals"] = daily_signals
+          else:
+              merged["daily_date"] = None
+              merged["daily_signals"] = {}
+
           # A confirmed send wins over an uncertain marker for the same ID.
           for key in merged["sent"]:
               merged["uncertain"].pop(key, None)
