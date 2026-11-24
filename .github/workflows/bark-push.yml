@@ -11,8 +11,9 @@ on:
 permissions:
   contents: write
 
+# Single writer for Bark delivery and state. Never cancel an active delivery.
 concurrency:
-  group: bark-push
+  group: bark-single-writer
   cancel-in-progress: false
 
 jobs:
@@ -39,19 +40,101 @@ jobs:
         if: always()
         run: |
           set -euo pipefail
-          if [ -f state.json ]; then
-            git config user.name "bark-bot"
-            git config user.email "bark-bot@users.noreply.github.com"
-            git add state.json
-            if ! git diff --cached --quiet; then
-              git commit -m "Update Bark delivery state"
-              for attempt in 1 2 3; do
-                if git push; then exit 0; fi
-                git pull --rebase origin main
-              done
-              echo "Failed to persist state.json after 3 attempts" >&2
+          if [ ! -f state.json ]; then
+            echo "state.json not created; nothing to persist"
+            exit 0
+          fi
+
+          git config user.name "bark-bot"
+          git config user.email "bark-bot@users.noreply.github.com"
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "Delivery state unchanged"
+            exit 0
+          fi
+          git commit -m "Update Bark delivery state"
+
+          # Retry non-fast-forward races. If state.json conflicts during
+          # rebase, merge its records instead of choosing either side.
+          for attempt in 1 2 3 4 5; do
+            echo "Persist attempt ${attempt}/5"
+            git fetch origin main
+
+            if git rebase origin/main; then
+              if git push origin HEAD:main; then
+                echo "Delivery state persisted"
+                exit 0
+              fi
+              echo "Push raced with another update; retrying"
+              continue
+            fi
+
+            if git diff --name-only --diff-filter=U | grep -qx 'state.json'; then
+              echo "Merging concurrent state.json updates"
+              python - <<'PY'
+          import json
+          import subprocess
+
+          def stage(number):
+              raw = subprocess.check_output(
+                  ["git", "show", f":{number}:state.json"], text=True
+              )
+              value = json.loads(raw)
+              if not isinstance(value, dict):
+                  raise SystemExit("Conflicted state is not a JSON object")
+              return value
+
+          ours, theirs = stage(2), stage(3)
+          merged = dict(theirs)
+          merged.update(ours)
+
+          for field in ("sent", "uncertain", "uncertain_alerts"):
+              combined = {}
+              for source in (theirs.get(field, {}), ours.get(field, {})):
+                  if not isinstance(source, dict):
+                      raise SystemExit(f"Malformed {field} during merge")
+                  for key, value in source.items():
+                      old = combined.get(key)
+                      old_ts = old.get("ts", 0) if isinstance(old, dict) else 0
+                      new_ts = value.get("ts", 0) if isinstance(value, dict) else 0
+                      if old is None or new_ts >= old_ts:
+                          combined[key] = value
+              merged[field] = combined
+
+          # A confirmed send wins over an uncertain marker for the same ID.
+          for key in merged["sent"]:
+              merged["uncertain"].pop(key, None)
+
+          for field in ("no_signal_slots", "failure_slots"):
+              values = []
+              for source in (theirs.get(field, []), ours.get(field, [])):
+                  if not isinstance(source, list):
+                      raise SystemExit(f"Malformed {field} during merge")
+                  for value in source:
+                      if value not in values:
+                          values.append(value)
+              merged[field] = values
+
+          merged["initialized"] = bool(
+              ours.get("initialized") or theirs.get("initialized")
+          )
+          for field in ("baseline_generated_at",):
+              values = [v for v in (theirs.get(field), ours.get(field)) if v]
+              if values:
+                  merged[field] = max(values)
+
+          with open("state.json", "w", encoding="utf-8") as handle:
+              json.dump(merged, handle, ensure_ascii=False, indent=2)
+              handle.write("\\n")
+          PY
+              git add state.json
+              GIT_EDITOR=true git rebase --continue
+            else
+              echo "Rebase conflict outside state.json; refusing automatic resolution" >&2
+              git rebase --abort || true
               exit 1
             fi
-          else
-            echo "state.json not created; nothing to persist"
-          fi
+          done
+
+          echo "Failed to persist state.json after 5 attempts" >&2
+          exit 1
