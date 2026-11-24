@@ -65,8 +65,12 @@ jobs:
               hits.add(symbol)
 
           selected = [symbol for symbol in order if symbol in hits]
+          bold = str.maketrans(
+              "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+              "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
+          )
           separator = "\u00a0▰\u00a0"
-          body = separator.join(selected) if selected else "𝐍𝐨 𝐒𝐢𝐠𝐧𝐚𝐥"
+          body = separator.join(symbol.translate(bold) for symbol in selected) if selected else "𝐍𝐨 𝐒𝐢𝐠𝐧𝐚𝐥"
           title = "▸▸ 𝐕𝐞𝐠𝐚𝐬 𝐒𝐢𝐠𝐧𝐚𝐥 ◂◂"
 
           url = (
