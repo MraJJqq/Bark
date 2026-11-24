@@ -1,0 +1,108 @@
+name: receive-vegas-signals
+
+on:
+  repository_dispatch:
+    types: [vegas-signals]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bark-vegas-notification
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Read latest Vegas result and push Bark notification
+        env:
+          BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import time
+          from urllib.parse import quote
+          import requests
+
+          if not os.environ.get("BARK_DEVICE_KEY"):
+              raise SystemExit("BARK_DEVICE_KEY secret is missing")
+
+          source = "https://raw.githubusercontent.com/MraJJqq/vegas/main/signals.json"
+          response = requests.get(source, timeout=20)
+          response.raise_for_status()
+          result = response.json()
+
+          if result.get("errors"):
+              raise SystemExit("Vegas result contains scan errors; notification blocked")
+          if not result.get("signal_date") or not isinstance(result.get("signals"), list):
+              raise SystemExit("Vegas result is incomplete or malformed")
+
+          stock_order = [
+              "MSFT", "GOOGL", "AMZN", "NVDA", "OPENAI", "AMD",
+              "TSM", "AVGO", "ORCL", "ARM", "MU", "ASML",
+              "SNDK", "SKHY", "MRVL", "GLW", "HOOD", "SPCX"
+          ]
+          core_order = ["BTC", "HYPE", "XAU", "CL"]
+          stock_set, core_set = set(stock_order), set(core_order)
+          stock_hits, core_hits = set(), set()
+
+          for item in result["signals"]:
+              raw = str(item.get("symbol", "")).upper()
+              symbol = raw[:-4] if raw.endswith("USDT") else raw
+              if symbol in stock_set:
+                  stock_hits.add(symbol)
+              elif symbol in core_set:
+                  core_hits.add(symbol)
+              else:
+                  raise SystemExit(f"Unexpected symbol in Vegas result: {raw}")
+
+          def lines(order, hits):
+              ordered = [symbol for symbol in order if symbol in hits]
+              if not ordered:
+                  return "▰ No change ▰"
+              return "\\n".join(
+                  "  ".join(ordered[index:index + 3])
+                  for index in range(0, len(ordered), 3)
+              )
+
+          body = (
+              "美股巨头\\n" + lines(stock_order, stock_hits)
+              + "\\n\\n核心能源\\n" + lines(core_order, core_hits)
+          )
+          title = "VEGAS V9"
+          key = os.environ["BARK_DEVICE_KEY"]
+          url = f"https://api.day.app/{quote(key, safe='')}/{quote(title, safe='')}/{quote(body, safe='')}"
+          last_error = None
+
+          for attempt in range(1, 4):
+              try:
+                  pushed = requests.get(
+                      url,
+                      params={"group": "VEGAS V9", "level": "active"},
+                      timeout=20
+                  )
+                  pushed.raise_for_status()
+                  payload = pushed.json()
+                  if payload.get("code") != 200:
+                      raise RuntimeError(f"Bark API rejected request: {payload}")
+                  print(
+                      f"Bark accepted notification; signal_date={result['signal_date']}; "
+                      f"signals={len(result['signals'])}; attempt={attempt}"
+                  )
+                  break
+              except Exception as exc:
+                  last_error = exc
+                  print(f"Bark push attempt {attempt}/3 failed: {exc}", file=sys.stderr)
+                  if attempt < 3:
+                      time.sleep(attempt * 2)
+          else:
+              raise SystemExit(f"Bark push failed after 3 attempts: {last_error}")
+          PY
