@@ -32,7 +32,7 @@ jobs:
           SCANNER_TOKEN: ${{ secrets.SCANNER_TOKEN }}
           SCANNER_WORKFLOW: vegas-scan.yml
           SCANNER_BRANCH: main
-          BARK_KEY: ${{ secrets.BARK_KEY }}
+          BARK_KEY: ${{ secrets.BARK_KEY || secrets.BARK_DEVICE_KEY }}
           BARK_SERVER: https://api.day.app
         run: python bark.py
       - name: Save delivery state
