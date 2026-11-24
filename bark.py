@@ -51,6 +51,8 @@ def load_state():
             raise ValueError("signal state malformed")
         if not isinstance(x["no_signal_slots"], list) or not isinstance(x["failure_slots"], list):
             raise ValueError("slot state malformed")
+        if not isinstance(x["uncertain_alerts"], dict):
+            raise ValueError("uncertain alert state malformed")
         return x
     except Exception as e:
         raise RuntimeError(f"state.json damaged; refusing reset: {e}") from e
@@ -72,6 +74,10 @@ def prune(x):
     keep = (datetime.now(CST).date() - timedelta(days=KEEP_DAYS)).isoformat()
     for field in ("no_signal_slots", "failure_slots"):
         x[field] = [v for v in x[field] if str(v)[:10] >= keep]
+    x["uncertain_alerts"] = {
+        k:v for k,v in x["uncertain_alerts"].items()
+        if isinstance(v, dict) and isinstance(v.get("ts"), int) and v["ts"] >= cutoff
+    }
 
 def gh(url, method="GET", **kwargs):
     r = S.request(method, url, timeout=25, **kwargs)
