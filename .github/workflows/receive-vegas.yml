@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install dependency
+        run: pip install requests
       - name: Read latest Vegas result and push Bark notification
         env:
           BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
