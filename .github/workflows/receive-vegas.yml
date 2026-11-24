@@ -1,106 +1,14 @@
-name: receive-vegas-signals
+name: legacy-receiver-disabled
 
+# Retired: all notifications are handled by bark-push.yml.
 on:
-  repository_dispatch:
-    types: [vegas-signals]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: bark-vegas-notification
-  cancel-in-progress: false
-
 jobs:
-  notify:
+  retired:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
     steps:
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install dependency
-        run: pip install requests
-      - name: Read latest Vegas result and push Bark notification
-        env:
-          BARK_DEVICE_KEY: ${{ secrets.BARK_DEVICE_KEY }}
-        run: |
-          python - <<'PY'
-          import os
-          import sys
-          import time
-          from urllib.parse import quote
-          import requests
-
-          key = os.environ.get("BARK_DEVICE_KEY")
-          if not key:
-              raise SystemExit("BARK_DEVICE_KEY secret is missing")
-
-          source = "https://raw.githubusercontent.com/MraJJqq/vegas/main/signals.json"
-          response = requests.get(source, timeout=20)
-          response.raise_for_status()
-          result = response.json()
-
-          if result.get("errors"):
-              raise SystemExit("Vegas result contains scan errors; notification blocked")
-          if not result.get("signal_date") or not isinstance(result.get("signals"), list):
-              raise SystemExit("Vegas result is incomplete or malformed")
-
-          order = [
-              "MSFTUSDT", "GOOGLUSDT", "AMZNUSDT", "NVDAUSDT",
-              "OPENAIUSDT", "AMDUSDT", "TSMUSDT", "AVGOUSDT",
-              "ORCLUSDT", "ARMUSDT", "MUUSDT", "ASMLUSDT",
-              "SNDKUSDT", "SKHYUSDT", "MRVLUSDT", "GLWUSDT",
-              "HOODUSDT", "SPCXUSDT", "BTCUSDT", "HYPEUSDT",
-              "XAUUSDT", "CLUSDT"
-          ]
-          allowed = set(order)
-          hits = set()
-
-          for item in result["signals"]:
-              symbol = str(item.get("symbol", "")).upper()
-              if symbol not in allowed:
-                  raise SystemExit(f"Unexpected symbol in Vegas result: {symbol}")
-              hits.add(symbol)
-
-          selected = [symbol for symbol in order if symbol in hits]
-          bold = str.maketrans(
-              "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-              "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗"
-          )
-          separator = "\u00a0▰\u00a0"
-          display_symbols = [symbol.removesuffix("USDT") for symbol in selected]
-          body = separator.join(symbol.translate(bold) for symbol in display_symbols) if display_symbols else "𝐍𝐨 𝐒𝐢𝐠𝐧𝐚𝐥"
-          title = "▸▸ 𝐕𝐞𝐠𝐚𝐬 𝐒𝐢𝐠𝐧𝐚𝐥 ◂◂"
-
-          url = (
-              f"https://api.day.app/{quote(key, safe='')}/"
-              f"{quote(title, safe='')}/{quote(body, safe='')}"
-          )
-          last_error = None
-
-          for attempt in range(1, 4):
-              try:
-                  pushed = requests.get(
-                      url,
-                      params={"group": "Vegas Signal", "level": "active"},
-                      timeout=20
-                  )
-                  pushed.raise_for_status()
-                  payload = pushed.json()
-                  if payload.get("code") != 200:
-                      raise RuntimeError(f"Bark API rejected request: {payload}")
-                  print(
-                      f"Bark accepted notification; signal_date={result['signal_date']}; "
-                      f"signals={len(selected)}; attempt={attempt}"
-                  )
-                  break
-              except Exception as exc:
-                  last_error = exc
-                  print(f"Bark push attempt {attempt}/3 failed: {exc}", file=sys.stderr)
-                  if attempt < 3:
-                      time.sleep(attempt * 2)
-          else:
-              raise SystemExit(f"Bark push failed after 3 attempts: {last_error}")
-          PY
+      - run: echo "Legacy receiver retired; no Bark notification is sent here."

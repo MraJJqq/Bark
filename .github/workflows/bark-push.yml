@@ -1,0 +1,57 @@
+name: bark-push
+
+on:
+  repository_dispatch:
+    types: [vegas-signals]
+  schedule:
+    # Beijing time 08:30 / 10:30 / 16:30 / 20:30 / 22:30
+    - cron: "30 0,2,8,12,14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bark-push
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependency
+        run: pip install requests
+      - name: Run Bark notifier
+        env:
+          SCANNER_REPO: MraJJqq/vegas
+          SCANNER_TOKEN: \${{ secrets.SCANNER_TOKEN }}
+          SCANNER_WORKFLOW: vegas-scan.yml
+          SCANNER_BRANCH: main
+          BARK_KEY: \${{ secrets.BARK_KEY }}
+          BARK_SERVER: https://api.day.app
+        run: python bark.py
+      - name: Save delivery state
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f state.json ]; then
+            git config user.name "bark-bot"
+            git config user.email "bark-bot@users.noreply.github.com"
+            git add state.json
+            if ! git diff --cached --quiet; then
+              git commit -m "Update Bark delivery state"
+              for attempt in 1 2 3; do
+                if git push; then exit 0; fi
+                git pull --rebase origin main
+              done
+              echo "Failed to persist state.json after 3 attempts" >&2
+              exit 1
+            fi
+          else
+            echo "state.json not created; nothing to persist"
+          fi
