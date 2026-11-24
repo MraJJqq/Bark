@@ -4,7 +4,7 @@ on:
   repository_dispatch:
     types: [vegas-signals]
   schedule:
-    # Beijing time 08:30 / 10:30 / 16:30 / 20:30 / 22:30
+    # Re-registered schedule: Beijing time 08:30 / 10:30 / 16:30 / 20:30 / 22:30
     - cron: "30 0,2,8,12,14 * * *"
   workflow_dispatch:
 
