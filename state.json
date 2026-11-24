@@ -1,0 +1,10 @@
+{
+  "initialized": false,
+  "sent": {},
+  "uncertain": {},
+  "no_signal_slots": [],
+  "failure_slots": [
+    "2026-11-24-18"
+  ],
+  "uncertain_alerts": {}
+}
