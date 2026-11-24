@@ -12,7 +12,9 @@ SCANNER_REPO = os.environ.get("SCANNER_REPO", "MraJJqq/vegas")
 SCANNER_TOKEN = os.environ["SCANNER_TOKEN"]
 SCANNER_WORKFLOW = os.environ.get("SCANNER_WORKFLOW", "vegas-scan.yml")
 SCANNER_BRANCH = os.environ.get("SCANNER_BRANCH", "main")
-BARK_KEY = os.environ["BARK_KEY"]
+BARK_KEY = os.environ.get("BARK_KEY") or os.environ.get("BARK_DEVICE_KEY")
+if not BARK_KEY:
+    raise RuntimeError("BARK_KEY secret is missing (BARK_DEVICE_KEY is also accepted)")
 BARK_SERVER = os.environ.get("BARK_SERVER", "https://api.day.app").rstrip("/")
 RESCAN_TIMES, WAIT_SECONDS, POLL_SECONDS, KEEP_DAYS = 2, 900, 15, 7
 SYMBOLS = [
