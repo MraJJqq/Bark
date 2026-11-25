@@ -38,12 +38,8 @@
   ],
   "uncertain_alerts": {},
   "baseline_generated_at": "2026-11-24 18:51:36 (UTC+8)",
-  "daily_date": "2026-11-25",
-  "daily_signals": {
-    "AMZNUSDT-1795532400000": "AMZNUSDT",
-    "MSFTUSDT-1795546800000": "MSFTUSDT",
-    "MSFTUSDT-1795543200000": "MSFTUSDT"
-  },
-  "last_pushed_generated_at": "2026-11-25 20:26:50 (UTC+8)",
+  "daily_date": "2026-11-26",
+  "daily_signals": {},
+  "last_pushed_generated_at": "2026-11-26 05:36:20 (UTC+8)",
   "pending_signals": {}
 }
