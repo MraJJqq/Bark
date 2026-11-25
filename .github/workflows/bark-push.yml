@@ -22,9 +22,24 @@ jobs:
     timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Record trigger and Vegas event status
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE_CRON: ${{ github.event.schedule }}
+          VEGAS_STATUS: ${{ github.event.client_payload.scanner_job_status }}
+        run: |
+          set -euo pipefail
+          echo "EVENT_NAME=$EVENT_NAME"
+          echo "SCHEDULE_CRON=${SCHEDULE_CRON:-not-a-schedule-event}"
+          echo "VEGAS_STATUS=${VEGAS_STATUS:-not-a-repository-dispatch}"
+          echo "RUN_ID=$GITHUB_RUN_ID"
+          echo "RUN_STARTED_UTC=$(date -u +%FT%TZ)"
+          echo "RUN_STARTED_BEIJING=$(TZ=Asia/Shanghai date +%FT%T%z)"
       - name: Install dependency
         run: pip install requests
       - name: Run Bark notifier
