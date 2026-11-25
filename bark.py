@@ -49,7 +49,7 @@ def load_state():
         if not isinstance(x, dict): raise ValueError("root is not object")
         for k, default in (("initialized", False), ("sent", {}), ("uncertain", {}),
                            ("no_signal_slots", []), ("failure_slots", []), ("uncertain_alerts", {}),
-                           ("daily_date", None), ("daily_signals", {}), ("last_pushed_generated_at", None)):
+                           ("daily_date", None), ("daily_signals", {}), ("pending_signals", {}), ("last_pushed_generated_at", None)):
             x.setdefault(k, default)
         if not isinstance(x["sent"], dict) or not isinstance(x["uncertain"], dict):
             raise ValueError("signal state malformed")
@@ -61,6 +61,8 @@ def load_state():
             raise ValueError("daily date state malformed")
         if not isinstance(x["daily_signals"], dict):
             raise ValueError("daily signal state malformed")
+        if not isinstance(x["pending_signals"], dict):
+            raise ValueError("pending signal state malformed")
         return x
     except Exception as e:
         raise RuntimeError(f"state.json damaged; refusing reset: {e}") from e
@@ -254,8 +256,10 @@ def main():
                 if symbol in SYMBOLS:
                     migrated[sid] = symbol
         state["daily_signals"] = migrated
+        state["pending_signals"] = {}
         state["daily_date"] = today
     elif state["daily_date"] != today:
+        # Daily display resets, but unnotified signals survive midnight.
         state["daily_signals"] = {}
         state["daily_date"] = today
 
@@ -267,7 +271,9 @@ def main():
     previous_ids = set(state["daily_signals"])
     for item in signals:
         state["daily_signals"][item["id"]] = item["symbol"]
+        state["pending_signals"][item["id"]] = item["symbol"]
     fresh = [item for item in signals if item["id"] not in previous_ids]
+    save_state(state)
 
     # Deduplicate duplicate Bark invocations for the same Vegas scan, not repeated signal IDs.
     if state.get("last_pushed_generated_at") == result["generated_at"]:
@@ -275,7 +281,7 @@ def main():
         save_state(state)
         return
 
-    if not state["daily_signals"]:
+    if not state["daily_signals"] and not state["pending_signals"]:
         if slot in state["uncertain_alerts"]:
             print(f"No-signal delivery already uncertain: {slot}"); save_state(state); return
         try: push(NO_SIGNAL)
@@ -287,8 +293,9 @@ def main():
         save_state(state)
         print(f"No Signal accepted for {slot}"); return
 
-    daily_symbols = set(state["daily_signals"].values())
-    ordered = [s for s in SYMBOLS if s in daily_symbols]
+    # Include today's signals plus older signals not yet delivered.
+    all_symbols = set(state["daily_signals"].values()) | set(state["pending_signals"].values())
+    ordered = [s for s in SYMBOLS if s in all_symbols]
     body = SEP.join(s.removesuffix("USDT").translate(BOLD) for s in ordered)
     try:
         push(body)
@@ -301,7 +308,9 @@ def main():
         raise RuntimeError(f"delivery uncertain; daily signal set retained and marked uncertain: {e}") from e
 
     state["last_pushed_generated_at"] = result["generated_at"]
+    # Successful Bark acceptance closes the pending cross-day queue.
+    state["pending_signals"] = {}
     save_state(state)
-    print(f"Bark accepted cumulative daily set: {len(state['daily_signals'])} IDs / {len(ordered)} unique symbols")
+    print(f"Bark accepted cumulative set: {len(state['daily_signals'])} daily IDs + pending queue / {len(ordered)} unique symbols")
 
 if __name__ == "__main__": main()
