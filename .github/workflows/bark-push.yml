@@ -103,7 +103,7 @@ jobs:
           merged = dict(theirs)
           merged.update(ours)
 
-          for field in ("sent", "uncertain", "uncertain_alerts"):
+          for field in ("sent", "uncertain", "uncertain_alerts", "pending_signals"):
               combined = {}
               for source in (theirs.get(field, {}), ours.get(field, {})):
                   if not isinstance(source, dict):
