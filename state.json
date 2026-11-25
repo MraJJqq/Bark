@@ -33,7 +33,8 @@
   "uncertain": {},
   "no_signal_slots": [],
   "failure_slots": [
-    "2026-11-24-18"
+    "2026-11-24-18",
+    "2026-11-25-10"
   ],
   "uncertain_alerts": {},
   "baseline_generated_at": "2026-11-24 18:51:36 (UTC+8)",
