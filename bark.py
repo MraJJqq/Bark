@@ -260,12 +260,9 @@ def main():
         state["daily_date"] = today
 
     if not state["initialized"]:
-        state["daily_signals"].update({s["id"]: s["symbol"] for s in signals})
+        # First run must deliver today's signals too; do not absorb them as a silent baseline.
         state["initialized"] = True
         state["baseline_generated_at"] = result["generated_at"]
-        save_state(state)
-        print(f"Baseline stored ({len(state['daily_signals'])} daily IDs); historical signals not pushed")
-        return
 
     previous_ids = set(state["daily_signals"])
     for item in signals:
