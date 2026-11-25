@@ -49,7 +49,7 @@ def load_state():
         if not isinstance(x, dict): raise ValueError("root is not object")
         for k, default in (("initialized", False), ("sent", {}), ("uncertain", {}),
                            ("no_signal_slots", []), ("failure_slots", []), ("uncertain_alerts", {}),
-                           ("daily_date", None), ("daily_signals", {})):
+                           ("daily_date", None), ("daily_signals", {}), ("last_pushed_generated_at", None)):
             x.setdefault(k, default)
         if not isinstance(x["sent"], dict) or not isinstance(x["uncertain"], dict):
             raise ValueError("signal state malformed")
@@ -272,20 +272,23 @@ def main():
         state["daily_signals"][item["id"]] = item["symbol"]
     fresh = [item for item in signals if item["id"] not in previous_ids]
 
+    # Deduplicate duplicate Bark invocations for the same Vegas scan, not repeated signal IDs.
+    if state.get("last_pushed_generated_at") == result["generated_at"]:
+        print(f"Vegas scan already notified: {result['generated_at']}")
+        save_state(state)
+        return
+
     if not state["daily_signals"]:
-        if slot in state["no_signal_slots"] or slot in state["uncertain_alerts"]:
-            print(f"No-signal slot already handled: {slot}"); save_state(state); return
+        if slot in state["uncertain_alerts"]:
+            print(f"No-signal delivery already uncertain: {slot}"); save_state(state); return
         try: push(NO_SIGNAL)
         except UncertainDelivery as e:
             state["uncertain_alerts"][slot] = {"ts":int(time.time()),"body":NO_SIGNAL}
             save_state(state); raise RuntimeError(f"No Signal delivery uncertain: {e}") from e
-        state["no_signal_slots"].append(slot); save_state(state)
-        print(f"No Signal accepted for {slot}"); return
-
-    if not fresh:
-        print(f"No new signals; retained {len(state['daily_signals'])} daily IDs")
+        state["no_signal_slots"].append(slot)
+        state["last_pushed_generated_at"] = result["generated_at"]
         save_state(state)
-        return
+        print(f"No Signal accepted for {slot}"); return
 
     daily_symbols = set(state["daily_signals"].values())
     ordered = [s for s in SYMBOLS if s in daily_symbols]
@@ -300,6 +303,7 @@ def main():
         save_state(state)
         raise RuntimeError(f"delivery uncertain; daily signal set retained and marked uncertain: {e}") from e
 
+    state["last_pushed_generated_at"] = result["generated_at"]
     save_state(state)
     print(f"Bark accepted cumulative daily set: {len(state['daily_signals'])} IDs / {len(ordered)} unique symbols")
 
