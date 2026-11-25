@@ -44,8 +44,6 @@
     "MSFTUSDT-1795546800000": "MSFTUSDT",
     "MSFTUSDT-1795543200000": "MSFTUSDT"
   },
-  "last_pushed_generated_at": null,
-  "pending_signals": {
-    "NVDAUSDT-1795485600000": "NVDAUSDT"
-  }
+  "last_pushed_generated_at": "2026-11-25 20:26:50 (UTC+8)",
+  "pending_signals": {}
 }
