@@ -116,12 +116,19 @@ def validate(x):
     generated = parse_time(x.get("generated_at"))
     age = (datetime.now(CST)-generated).total_seconds()
     if age < -300 or age > 90*60: raise ValueError(f"result stale/future: {int(age)} seconds")
+    signal_date = x.get("signal_date")
+    if signal_date != generated.date().isoformat():
+        raise ValueError(f"signal_date mismatch: {signal_date!r} vs generated date {generated.date()}")
     ids, allowed = set(), set(SYMBOLS)
+    day_start = int(datetime.combine(generated.date(), datetime.min.time(), tzinfo=CST).timestamp() * 1000)
+    day_end = day_start + 24 * 60 * 60 * 1000
     for item in x["signals"]:
         if not isinstance(item, dict): raise ValueError("malformed signal item")
-        sid, symbol = item.get("id"), item.get("symbol")
+        sid, symbol, stamp = item.get("id"), item.get("symbol"), item.get("ts")
         if not isinstance(sid, str) or not sid.strip() or sid in ids: raise ValueError("missing/duplicate signal ID")
         if symbol not in allowed: raise ValueError(f"unexpected symbol: {symbol}")
+        if not isinstance(stamp, int) or not day_start <= stamp < day_end:
+            raise ValueError(f"signal timestamp outside signal_date: {sid}")
         ids.add(sid)
     return generated
 
@@ -159,17 +166,32 @@ def acquire_result():
                 event_status = (json.load(f).get("client_payload") or {}).get("scanner_job_status")
         except Exception: pass
     original, error = None, None
+    last = latest_run()
     try:
         original = read_result()
-        validate(original)
-        if event_status == "failure": raise ValueError("Vegas workflow reported failure")
+        generated = validate(original)
+        if event_status == "failure":
+            raise ValueError("Vegas workflow reported failure")
+        if event_status is None:
+            # A scheduled Bark run must not consume a previous successful result
+            # when the latest Vegas run is still running or has failed.
+            if not last:
+                raise ValueError("no Vegas workflow run found")
+            if last.get("status") != "completed" or last.get("conclusion") != "success":
+                raise ValueError(
+                    f"latest Vegas run is not successful: "
+                    f"status={last.get('status')} conclusion={last.get('conclusion')}"
+                )
+        if last and last.get("created_at"):
+            started = datetime.fromisoformat(last["created_at"].replace("Z", "+00:00")).astimezone(CST)
+            if generated < started - timedelta(minutes=2):
+                raise ValueError("signals.json predates the latest Vegas scan run")
         return original
     except Exception as e: error = e
     previous_generated = None
     if original:
         try: previous_generated = parse_time(original.get("generated_at"))
         except Exception: pass
-    last = latest_run()
     previous_id = last.get("id", 0) if last else 0
     for attempt in range(1, RESCAN_TIMES+1):
         try:
@@ -271,8 +293,12 @@ def main():
     try:
         push(body)
     except UncertainDelivery as e:
+        state["uncertain_alerts"][slot] = {
+            "ts": int(time.time()), "body": body,
+            "signal_ids": [item["id"] for item in fresh]
+        }
         save_state(state)
-        raise RuntimeError(f"delivery uncertain; daily signal set retained for the next update: {e}") from e
+        raise RuntimeError(f"delivery uncertain; daily signal set retained and marked uncertain: {e}") from e
 
     save_state(state)
     print(f"Bark accepted cumulative daily set: {len(state['daily_signals'])} IDs / {len(ordered)} unique symbols")
