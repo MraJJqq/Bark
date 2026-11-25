@@ -259,7 +259,9 @@ def main():
         state["pending_signals"] = {}
         state["daily_date"] = today
     elif state["daily_date"] != today:
-        # Daily display resets, but unnotified signals survive midnight.
+        # Carry every signal from the completed day into the next day's push.
+        # The queue is cleared only after Bark accepts the next-day notification.
+        state["pending_signals"].update(state["daily_signals"])
         state["daily_signals"] = {}
         state["daily_date"] = today
 
@@ -271,9 +273,7 @@ def main():
     previous_ids = set(state["daily_signals"])
     for item in signals:
         state["daily_signals"][item["id"]] = item["symbol"]
-        state["pending_signals"][item["id"]] = item["symbol"]
     fresh = [item for item in signals if item["id"] not in previous_ids]
-    save_state(state)
 
     # Deduplicate duplicate Bark invocations for the same Vegas scan, not repeated signal IDs.
     if state.get("last_pushed_generated_at") == result["generated_at"]:
