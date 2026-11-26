@@ -31,7 +31,9 @@
     }
   },
   "uncertain": {},
-  "no_signal_slots": [],
+  "no_signal_slots": [
+    "2026-11-26-manual-1604"
+  ],
   "failure_slots": [
     "2026-11-24-18",
     "2026-11-25-10"
@@ -40,6 +42,6 @@
   "baseline_generated_at": "2026-11-24 18:51:36 (UTC+8)",
   "daily_date": "2026-11-26",
   "daily_signals": {},
-  "last_pushed_generated_at": "2026-11-26 05:36:20 (UTC+8)",
+  "last_pushed_generated_at": "2026-11-26 16:04:39 (UTC+8)",
   "pending_signals": {}
 }
