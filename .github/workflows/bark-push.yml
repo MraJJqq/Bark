@@ -103,7 +103,7 @@ jobs:
           merged = dict(theirs)
           merged.update(ours)
 
-          for field in ("sent", "uncertain", "uncertain_alerts", "pending_signals"):
+          for field in ("sent", "uncertain", "uncertain_alerts"):
               combined = {}
               for source in (theirs.get(field, {}), ours.get(field, {})):
                   if not isinstance(source, dict):
@@ -115,6 +115,9 @@ jobs:
                       if old is None or new_ts >= old_ts:
                           combined[key] = value
               merged[field] = combined
+
+          # Cross-day carryover is disabled; never resurrect an older pending queue.
+          merged["pending_signals"] = {}
 
           # Keep the newest day's cumulative signal set; union concurrent updates
           # only when both writers belong to that same Beijing calendar day.
