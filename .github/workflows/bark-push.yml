@@ -161,7 +161,7 @@ jobs:
 
           with open("state.json", "w", encoding="utf-8") as handle:
               json.dump(merged, handle, ensure_ascii=False, indent=2)
-              handle.write("\\n")
+              handle.write("\n")
           PY
               git add state.json
               GIT_EDITOR=true git rebase --continue
