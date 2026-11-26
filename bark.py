@@ -206,11 +206,15 @@ def acquire_result():
     raise RuntimeError(f"Vegas incomplete after 2 recovery scans; initial error: {error}")
 
 def slot_key(generated):
-    for day_offset in (0,-1):
+    candidates = []
+    for day_offset in (0,-1,1):
         d = generated.date()+timedelta(days=day_offset)
         for h in (8,10,16,20,22):
             t = datetime(d.year,d.month,d.day,h,5,tzinfo=CST)
-            if 0 <= (generated-t).total_seconds() <= 2*3600: return t.strftime("%Y-%m-%d-%H")
+            candidates.append(t)
+    nearest = min(candidates, key=lambda t: abs((generated-t).total_seconds()))
+    if abs((generated-nearest).total_seconds()) <= 2*3600:
+        return nearest.strftime("%Y-%m-%d-%H")
     return generated.strftime("%Y-%m-%d-manual-%H%M")
 
 def push(body):
@@ -259,10 +263,9 @@ def main():
         state["pending_signals"] = {}
         state["daily_date"] = today
     elif state["daily_date"] != today:
-        # Carry every signal from the completed day into the next day's push.
-        # The queue is cleared only after Bark accepts the next-day notification.
-        state["pending_signals"].update(state["daily_signals"])
+        # Beijing midnight starts a new daily set; never carry yesterday forward.
         state["daily_signals"] = {}
+        state["pending_signals"] = {}
         state["daily_date"] = today
 
     if not state["initialized"]:
@@ -281,22 +284,31 @@ def main():
         save_state(state)
         return
 
-    if not state["daily_signals"] and not state["pending_signals"]:
-        if slot in state["uncertain_alerts"]:
+    if not state["daily_signals"]:
+        if slot in state["no_signal_slots"]:
+            print(f"No Signal already accepted for slot: {slot}"); save_state(state); return
+        uncertain = state["uncertain_alerts"].get(slot)
+        if uncertain and uncertain.get("body") == NO_SIGNAL:
             print(f"No-signal delivery already uncertain: {slot}"); save_state(state); return
         try: push(NO_SIGNAL)
         except UncertainDelivery as e:
             state["uncertain_alerts"][slot] = {"ts":int(time.time()),"body":NO_SIGNAL}
             save_state(state); raise RuntimeError(f"No Signal delivery uncertain: {e}") from e
         state["no_signal_slots"].append(slot)
+        state["uncertain_alerts"].pop(slot, None)
         state["last_pushed_generated_at"] = result["generated_at"]
         save_state(state)
         print(f"No Signal accepted for {slot}"); return
 
-    # Include today's signals plus older signals not yet delivered.
-    all_symbols = set(state["daily_signals"].values()) | set(state["pending_signals"].values())
+    # Notify only the current Beijing day's cumulative signal set.
+    all_symbols = set(state["daily_signals"].values())
     ordered = [s for s in SYMBOLS if s in all_symbols]
     body = SEP.join(s.removesuffix("USDT").translate(BOLD) for s in ordered)
+    uncertain = state["uncertain_alerts"].get(slot)
+    if uncertain and uncertain.get("body") == body:
+        print(f"Signal delivery already uncertain for slot: {slot}")
+        save_state(state)
+        return
     try:
         push(body)
     except UncertainDelivery as e:
@@ -308,7 +320,7 @@ def main():
         raise RuntimeError(f"delivery uncertain; daily signal set retained and marked uncertain: {e}") from e
 
     state["last_pushed_generated_at"] = result["generated_at"]
-    # Successful Bark acceptance closes the pending cross-day queue.
+    state["uncertain_alerts"].pop(slot, None)
     state["pending_signals"] = {}
     save_state(state)
     print(f"Bark accepted cumulative set: {len(state['daily_signals'])} daily IDs + pending queue / {len(ordered)} unique symbols")
