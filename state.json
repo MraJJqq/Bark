@@ -44,7 +44,10 @@
   "uncertain_alerts": {},
   "baseline_generated_at": "2026-11-24 18:51:36 (UTC+8)",
   "daily_date": "2026-11-27",
-  "daily_signals": {},
-  "last_pushed_generated_at": "2026-11-27 08:35:55 (UTC+8)",
+  "daily_signals": {
+    "MSFTUSDT-1795755600000": "MSFTUSDT",
+    "CLUSDT-1795759200000": "CLUSDT"
+  },
+  "last_pushed_generated_at": "2026-11-27 16:13:17 (UTC+8)",
   "pending_signals": {}
 }
