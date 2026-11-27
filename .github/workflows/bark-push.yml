@@ -16,7 +16,7 @@ permissions:
 # Single writer for Bark delivery and state. Never cancel an active delivery.
 concurrency:
   group: bark-single-writer
-  cancel-in-progress: false
+  queue: max
 
 jobs:
   push:
