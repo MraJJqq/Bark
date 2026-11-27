@@ -9,12 +9,10 @@ CST = timezone(timedelta(hours=8))
 API = "https://api.github.com"
 STATE_FILE = "state.json"
 SCANNER_REPO = os.environ.get("SCANNER_REPO", "MraJJqq/vegas")
-SCANNER_TOKEN = os.environ["SCANNER_TOKEN"]
+SCANNER_TOKEN = os.environ.get("SCANNER_TOKEN", "")
 SCANNER_WORKFLOW = os.environ.get("SCANNER_WORKFLOW", "vegas-scan.yml")
 SCANNER_BRANCH = os.environ.get("SCANNER_BRANCH", "main")
 BARK_KEY = os.environ.get("BARK_KEY") or os.environ.get("BARK_DEVICE_KEY")
-if not BARK_KEY:
-    raise RuntimeError("BARK_KEY secret is missing (BARK_DEVICE_KEY is also accepted)")
 BARK_SERVER = os.environ.get("BARK_SERVER", "https://api.day.app").rstrip("/")
 RESCAN_TIMES, WAIT_SECONDS, POLL_SECONDS, KEEP_DAYS = 2, 900, 15, 7
 SYMBOLS = [
@@ -28,8 +26,9 @@ NO_SIGNAL, SCAN_FAILED = "𝐍𝐨 𝐒𝐢𝐠𝐧𝐚𝐥", "𝐒𝐜𝐚𝐧 
 SEP = "\u00a0▰\u00a0"
 BOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
     "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗")
-HEADERS = {"Authorization": f"Bearer {SCANNER_TOKEN}",
-    "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+if SCANNER_TOKEN:
+    HEADERS["Authorization"] = f"Bearer {SCANNER_TOKEN}"
 S = requests.Session()
 S.headers.update(HEADERS)
 
@@ -63,6 +62,11 @@ def load_state():
             raise ValueError("daily signal state malformed")
         if not isinstance(x["pending_signals"], dict):
             raise ValueError("pending signal state malformed")
+        for sid, symbol in x["daily_signals"].items():
+            if not isinstance(sid, str) or not isinstance(symbol, str) or symbol not in SYMBOLS:
+                raise ValueError("daily signal entry malformed")
+        if x["last_pushed_generated_at"] is not None:
+            parse_time(x["last_pushed_generated_at"])
         return x
     except Exception as e:
         raise RuntimeError(f"state.json damaged; refusing reset: {e}") from e
@@ -285,7 +289,15 @@ def failure_notice(state, slot):
     state["failure_slots"].append(slot); save_state(state)
 
 def main():
-    state = load_state(); prune(state)
+    try:
+        state = load_state()
+    except Exception as exc:
+        print(f"STATE INITIALIZATION FAILED: {exc}", file=sys.stderr)
+        if BARK_KEY:
+            try: push(SCAN_FAILED)
+            except Exception as notify_error: print(f"Startup failure notice unavailable: {notify_error}", file=sys.stderr)
+        raise
+    prune(state)
     # Dedicated Beijing 00:05 reset: clear only the daily signal set, without
     # scanning Vegas or sending a notification.
     if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and os.environ.get("GITHUB_EVENT_SCHEDULE") == "5 16 * * *":
@@ -297,12 +309,19 @@ def main():
         print(f"Daily signal state reset for {today}")
         return
     try:
+        if not SCANNER_TOKEN:
+            raise RuntimeError("SCANNER_TOKEN secret is missing")
+        if not BARK_KEY:
+            raise RuntimeError("BARK_KEY secret is missing (BARK_DEVICE_KEY is also accepted)")
         result = acquire_result()
         generated = validate(result)
     except Exception as e:
         slot = datetime.now(CST).strftime("%Y-%m-%d-%H")
         print(f"SCAN FAILED: {e}", file=sys.stderr)
-        failure_notice(state, slot); save_state(state); raise
+        if BARK_KEY:
+            failure_notice(state, slot)
+        save_state(state)
+        raise
     slot = slot_key(generated)
     signals = result["signals"]
     today = datetime.now(CST).date().isoformat()
