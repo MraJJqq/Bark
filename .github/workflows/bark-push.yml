@@ -6,6 +6,8 @@ on:
   schedule:
     # Re-registered schedule: Beijing time 08:30 / 10:30 / 16:30 / 20:30 / 22:30
     - cron: "30 0,2,8,12,14 * * *"
+    # Beijing 00:05 daily signal-state reset
+    - cron: "5 16 * * *"
   workflow_dispatch:
 
 permissions:
@@ -36,6 +38,8 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE_CRON: ${{ github.event.schedule }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_EVENT_SCHEDULE: ${{ github.event.schedule }}
           VEGAS_STATUS: ${{ github.event.client_payload.scanner_job_status }}
         run: |
           set -euo pipefail
@@ -107,6 +111,18 @@ jobs:
           ours, theirs = stage(2), stage(3)
           merged = dict(theirs)
           merged.update(ours)
+
+          # The delivery watermark is monotonic: a stale writer cannot move it back.
+          watermarks = [
+              value for value in (
+                  theirs.get("last_pushed_generated_at"),
+                  ours.get("last_pushed_generated_at"),
+              ) if isinstance(value, str)
+          ]
+          if watermarks:
+              merged["last_pushed_generated_at"] = max(watermarks)
+          else:
+              merged.pop("last_pushed_generated_at", None)
 
           for field in ("sent", "uncertain", "uncertain_alerts"):
               combined = {}
