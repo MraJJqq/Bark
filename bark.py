@@ -111,7 +111,11 @@ def read_result():
 
 def validate(x):
     if not isinstance(x, dict): raise ValueError("signals.json is not an object")
-    if x.get("scanned") != 22 or x.get("succeeded") != 22:
+    scanned_symbols = x.get("scanned_symbols")
+    if (not isinstance(scanned_symbols, list) or len(scanned_symbols) != len(SYMBOLS)
+            or len(set(scanned_symbols)) != len(SYMBOLS) or set(scanned_symbols) != set(SYMBOLS)):
+        raise ValueError("scanned_symbols does not exactly match the required 22 symbols")
+    if x.get("scanned") != len(SYMBOLS) or x.get("succeeded") != len(SYMBOLS):
         raise ValueError(f"scan incomplete: scanned={x.get('scanned')} succeeded={x.get('succeeded')}")
     if x.get("errors") != []: raise ValueError(f"scan errors: {x.get('errors')!r}")
     if not isinstance(x.get("signals"), list): raise ValueError("signals must be a list")
@@ -121,6 +125,9 @@ def validate(x):
     signal_date = x.get("signal_date")
     if signal_date != generated.date().isoformat():
         raise ValueError(f"signal_date mismatch: {signal_date!r} vs generated date {generated.date()}")
+    today = datetime.now(CST).date()
+    if generated.date() != today or signal_date != today.isoformat():
+        raise ValueError(f"refusing cross-day Vegas result: generated={generated.date()} today={today}")
     ids, allowed = set(), set(SYMBOLS)
     day_start = int(datetime.combine(generated.date(), datetime.min.time(), tzinfo=CST).timestamp() * 1000)
     day_end = day_start + 24 * 60 * 60 * 1000
@@ -135,7 +142,7 @@ def validate(x):
     return generated
 
 def rescan(previous_id, previous_generated):
-    r = S.post(workflow_url()+"/dispatches", json={"ref":SCANNER_BRANCH}, timeout=25)
+    r = S.post(workflow_url()+"/dispatches", json={"ref":SCANNER_BRANCH,"inputs":{"bark_recovery":"true"}}, timeout=25)
     if r.status_code not in (201,204): raise RuntimeError(f"workflow_dispatch failed: HTTP {r.status_code}")
     deadline = time.monotonic()+WAIT_SECONDS
     run = None
@@ -222,15 +229,19 @@ def push(body):
     try:
         r = requests.get(url, params={"group":"Vegas Signal","level":"active"}, timeout=(10,25))
     except requests.RequestException as e: raise UncertainDelivery(str(e)) from e
-    if r.status_code >= 500: raise UncertainDelivery(f"Bark HTTP {r.status_code}")
-    r.raise_for_status()
+    if r.status_code in (408, 429) or r.status_code >= 500:
+        raise UncertainDelivery(f"Bark HTTP {r.status_code}")
+    if r.status_code >= 400:
+        raise RuntimeError(f"Bark rejected: HTTP {r.status_code} {r.text[:300]}")
     try: payload = r.json()
-    except ValueError as e: raise RuntimeError("Bark response is not JSON") from e
-    if payload.get("code") != 200: raise RuntimeError(f"Bark rejected: {payload}")
+    except ValueError as e: raise UncertainDelivery("Bark returned a non-JSON response after request") from e
+    if not isinstance(payload, dict) or payload.get("code") != 200:
+        raise RuntimeError(f"Bark rejected: {payload!r}")
     return True
 
 def failure_notice(state, slot):
-    if slot in state["failure_slots"] or slot in state["uncertain_alerts"]: return
+    prior = state["uncertain_alerts"].get(slot)
+    if slot in state["failure_slots"] or (prior and prior.get("body") == SCAN_FAILED): return
     try: push(SCAN_FAILED)
     except UncertainDelivery as e:
         state["uncertain_alerts"][slot] = {"ts":int(time.time()),"body":SCAN_FAILED}
