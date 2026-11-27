@@ -286,6 +286,16 @@ def failure_notice(state, slot):
 
 def main():
     state = load_state(); prune(state)
+    # Dedicated Beijing 00:05 reset: clear only the daily signal set, without
+    # scanning Vegas or sending a notification.
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and os.environ.get("GITHUB_EVENT_SCHEDULE") == "5 16 * * *":
+        today = datetime.now(CST).date().isoformat()
+        state["daily_date"] = today
+        state["daily_signals"] = {}
+        state["pending_signals"] = {}
+        save_state(state)
+        print(f"Daily signal state reset for {today}")
+        return
     try:
         result = acquire_result()
         generated = validate(result)
@@ -296,6 +306,12 @@ def main():
     slot = slot_key(generated)
     signals = result["signals"]
     today = datetime.now(CST).date().isoformat()
+    previous_generated = state.get("last_pushed_generated_at")
+    if previous_generated:
+        previous_time = parse_time(previous_generated)
+        if generated <= previous_time:
+            print(f"Stale or duplicate Vegas result rejected: {result['generated_at']} <= {previous_generated}")
+            return
 
     # Migrate the previous ID-based state once, preserving today's known signals.
     if state["daily_date"] is None:
@@ -324,12 +340,6 @@ def main():
     for item in signals:
         state["daily_signals"][item["id"]] = item["symbol"]
     fresh = [item for item in signals if item["id"] not in previous_ids]
-
-    # Deduplicate duplicate Bark invocations for the same Vegas scan, not repeated signal IDs.
-    if state.get("last_pushed_generated_at") == result["generated_at"]:
-        print(f"Vegas scan already notified: {result['generated_at']}")
-        save_state(state)
-        return
 
     if not state["daily_signals"]:
         if slot in state["no_signal_slots"]:
