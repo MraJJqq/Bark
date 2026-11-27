@@ -166,50 +166,86 @@ def rescan(previous_id, previous_generated):
         time.sleep(POLL_SECONDS)
     raise TimeoutError(f"Vegas scan run {run_id} exceeded 15-minute wait")
 
-def acquire_result():
-    event_status = None
+def read_event():
     path = os.environ.get("GITHUB_EVENT_PATH")
-    if path and os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                event_status = (json.load(f).get("client_payload") or {}).get("scanner_job_status")
-        except Exception: pass
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            event = json.load(handle)
+        payload = event.get("client_payload") or {}
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def acquire_result():
+    event = read_event()
+    event_status = event.get("scanner_job_status")
+    event_run_id = event.get("scanner_run_id")
+    recovery_event = event.get("scanner_recovery") is True
     original, error = None, None
     last = latest_run()
+
     try:
+        if event_run_id:
+            run = gh(f"{API}/repos/{SCANNER_REPO}/actions/runs/{int(event_run_id)}")
+            if run.get("status") != "completed" or run.get("conclusion") != "success":
+                raise ValueError(
+                    f"Vegas event run {event_run_id} not successful: "
+                    f"status={run.get('status')} conclusion={run.get('conclusion')}"
+                )
+            original = read_result()
+            generated = validate(original)
+            started = datetime.fromisoformat(
+                run["created_at"].replace("Z", "+00:00")
+            ).astimezone(CST)
+            if generated < started - timedelta(minutes=2):
+                raise ValueError("signals.json predates the Vegas run named by the event")
+            return original
+
         original = read_result()
         generated = validate(original)
         if event_status == "failure":
             raise ValueError("Vegas workflow reported failure")
-        if event_status is None:
-            # A scheduled Bark run must not consume a previous successful result
-            # when the latest Vegas run is still running or has failed.
-            if not last:
-                raise ValueError("no Vegas workflow run found")
-            if last.get("status") != "completed" or last.get("conclusion") != "success":
-                raise ValueError(
-                    f"latest Vegas run is not successful: "
-                    f"status={last.get('status')} conclusion={last.get('conclusion')}"
-                )
-        if last and last.get("created_at"):
-            started = datetime.fromisoformat(last["created_at"].replace("Z", "+00:00")).astimezone(CST)
+        if not last:
+            raise ValueError("no Vegas workflow run found")
+        if last.get("status") != "completed" or last.get("conclusion") != "success":
+            raise ValueError(
+                f"latest Vegas run is not successful: "
+                f"status={last.get('status')} conclusion={last.get('conclusion')}"
+            )
+        if last.get("created_at"):
+            started = datetime.fromisoformat(
+                last["created_at"].replace("Z", "+00:00")
+            ).astimezone(CST)
             if generated < started - timedelta(minutes=2):
                 raise ValueError("signals.json predates the latest Vegas scan run")
         return original
-    except Exception as e: error = e
+    except Exception as exc:
+        error = exc
+
+    # A recovery-triggered Vegas run must never recursively start another
+    # recovery chain. Its failure is reported once and then terminates.
+    if recovery_event:
+        raise RuntimeError(f"Vegas recovery run failed; automatic recovery stopped: {error}") from error
+
     previous_generated = None
     if original:
-        try: previous_generated = parse_time(original.get("generated_at"))
-        except Exception: pass
+        try:
+            previous_generated = parse_time(original.get("generated_at"))
+        except Exception:
+            pass
     previous_id = last.get("id", 0) if last else 0
-    for attempt in range(1, RESCAN_TIMES+1):
+    for attempt in range(1, RESCAN_TIMES + 1):
         try:
             print(f"Recovery scan {attempt}/{RESCAN_TIMES}")
             return rescan(previous_id, previous_generated)
-        except Exception as e:
-            print(f"Recovery scan {attempt} failed: {e}", file=sys.stderr)
+        except Exception as exc:
+            print(f"Recovery scan {attempt} failed: {exc}", file=sys.stderr)
             latest = latest_run()
-            if latest: previous_id = latest.get("id", previous_id)
+            if latest:
+                previous_id = latest.get("id", previous_id)
     raise RuntimeError(f"Vegas incomplete after 2 recovery scans; initial error: {error}")
 
 def slot_key(generated):
