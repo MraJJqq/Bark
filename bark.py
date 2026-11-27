@@ -9,12 +9,10 @@ CST = timezone(timedelta(hours=8))
 API = "https://api.github.com"
 STATE_FILE = "state.json"
 SCANNER_REPO = os.environ.get("SCANNER_REPO", "MraJJqq/vegas")
-SCANNER_TOKEN = os.environ["SCANNER_TOKEN"]
+SCANNER_TOKEN = os.environ.get("SCANNER_TOKEN", "")
 SCANNER_WORKFLOW = os.environ.get("SCANNER_WORKFLOW", "vegas-scan.yml")
 SCANNER_BRANCH = os.environ.get("SCANNER_BRANCH", "main")
 BARK_KEY = os.environ.get("BARK_KEY") or os.environ.get("BARK_DEVICE_KEY")
-if not BARK_KEY:
-    raise RuntimeError("BARK_KEY secret is missing (BARK_DEVICE_KEY is also accepted)")
 BARK_SERVER = os.environ.get("BARK_SERVER", "https://api.day.app").rstrip("/")
 RESCAN_TIMES, WAIT_SECONDS, POLL_SECONDS, KEEP_DAYS = 2, 900, 15, 7
 SYMBOLS = [
@@ -28,8 +26,9 @@ NO_SIGNAL, SCAN_FAILED = "𝐍𝐨 𝐒𝐢𝐠𝐧𝐚𝐥", "𝐒𝐜𝐚𝐧 
 SEP = "\u00a0▰\u00a0"
 BOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
     "𝐀𝐁𝐂𝐃𝐄𝐅𝐆𝐇𝐈𝐉𝐊𝐋𝐌𝐍𝐎𝐏𝐐𝐑𝐒𝐓𝐔𝐕𝐖𝐗𝐘𝐙𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗")
-HEADERS = {"Authorization": f"Bearer {SCANNER_TOKEN}",
-    "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+if SCANNER_TOKEN:
+    HEADERS["Authorization"] = f"Bearer {SCANNER_TOKEN}"
 S = requests.Session()
 S.headers.update(HEADERS)
 
@@ -63,6 +62,11 @@ def load_state():
             raise ValueError("daily signal state malformed")
         if not isinstance(x["pending_signals"], dict):
             raise ValueError("pending signal state malformed")
+        for sid, symbol in x["daily_signals"].items():
+            if not isinstance(sid, str) or not isinstance(symbol, str) or symbol not in SYMBOLS:
+                raise ValueError("daily signal entry malformed")
+        if x["last_pushed_generated_at"] is not None:
+            parse_time(x["last_pushed_generated_at"])
         return x
     except Exception as e:
         raise RuntimeError(f"state.json damaged; refusing reset: {e}") from e
@@ -111,7 +115,11 @@ def read_result():
 
 def validate(x):
     if not isinstance(x, dict): raise ValueError("signals.json is not an object")
-    if x.get("scanned") != 22 or x.get("succeeded") != 22:
+    scanned_symbols = x.get("scanned_symbols")
+    if (not isinstance(scanned_symbols, list) or len(scanned_symbols) != len(SYMBOLS)
+            or len(set(scanned_symbols)) != len(SYMBOLS) or set(scanned_symbols) != set(SYMBOLS)):
+        raise ValueError("scanned_symbols does not exactly match the required 22 symbols")
+    if x.get("scanned") != len(SYMBOLS) or x.get("succeeded") != len(SYMBOLS):
         raise ValueError(f"scan incomplete: scanned={x.get('scanned')} succeeded={x.get('succeeded')}")
     if x.get("errors") != []: raise ValueError(f"scan errors: {x.get('errors')!r}")
     if not isinstance(x.get("signals"), list): raise ValueError("signals must be a list")
@@ -121,6 +129,9 @@ def validate(x):
     signal_date = x.get("signal_date")
     if signal_date != generated.date().isoformat():
         raise ValueError(f"signal_date mismatch: {signal_date!r} vs generated date {generated.date()}")
+    today = datetime.now(CST).date()
+    if generated.date() != today or signal_date != today.isoformat():
+        raise ValueError(f"refusing cross-day Vegas result: generated={generated.date()} today={today}")
     ids, allowed = set(), set(SYMBOLS)
     day_start = int(datetime.combine(generated.date(), datetime.min.time(), tzinfo=CST).timestamp() * 1000)
     day_end = day_start + 24 * 60 * 60 * 1000
@@ -135,7 +146,7 @@ def validate(x):
     return generated
 
 def rescan(previous_id, previous_generated):
-    r = S.post(workflow_url()+"/dispatches", json={"ref":SCANNER_BRANCH}, timeout=25)
+    r = S.post(workflow_url()+"/dispatches", json={"ref":SCANNER_BRANCH,"inputs":{"bark_recovery":"true"}}, timeout=25)
     if r.status_code not in (201,204): raise RuntimeError(f"workflow_dispatch failed: HTTP {r.status_code}")
     deadline = time.monotonic()+WAIT_SECONDS
     run = None
@@ -159,50 +170,86 @@ def rescan(previous_id, previous_generated):
         time.sleep(POLL_SECONDS)
     raise TimeoutError(f"Vegas scan run {run_id} exceeded 15-minute wait")
 
-def acquire_result():
-    event_status = None
+def read_event():
     path = os.environ.get("GITHUB_EVENT_PATH")
-    if path and os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                event_status = (json.load(f).get("client_payload") or {}).get("scanner_job_status")
-        except Exception: pass
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            event = json.load(handle)
+        payload = event.get("client_payload") or {}
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def acquire_result():
+    event = read_event()
+    event_status = event.get("scanner_job_status")
+    event_run_id = event.get("scanner_run_id")
+    recovery_event = event.get("scanner_recovery") is True
     original, error = None, None
     last = latest_run()
+
     try:
+        if event_run_id:
+            run = gh(f"{API}/repos/{SCANNER_REPO}/actions/runs/{int(event_run_id)}")
+            if run.get("status") != "completed" or run.get("conclusion") != "success":
+                raise ValueError(
+                    f"Vegas event run {event_run_id} not successful: "
+                    f"status={run.get('status')} conclusion={run.get('conclusion')}"
+                )
+            original = read_result()
+            generated = validate(original)
+            started = datetime.fromisoformat(
+                run["created_at"].replace("Z", "+00:00")
+            ).astimezone(CST)
+            if generated < started - timedelta(minutes=2):
+                raise ValueError("signals.json predates the Vegas run named by the event")
+            return original
+
         original = read_result()
         generated = validate(original)
         if event_status == "failure":
             raise ValueError("Vegas workflow reported failure")
-        if event_status is None:
-            # A scheduled Bark run must not consume a previous successful result
-            # when the latest Vegas run is still running or has failed.
-            if not last:
-                raise ValueError("no Vegas workflow run found")
-            if last.get("status") != "completed" or last.get("conclusion") != "success":
-                raise ValueError(
-                    f"latest Vegas run is not successful: "
-                    f"status={last.get('status')} conclusion={last.get('conclusion')}"
-                )
-        if last and last.get("created_at"):
-            started = datetime.fromisoformat(last["created_at"].replace("Z", "+00:00")).astimezone(CST)
+        if not last:
+            raise ValueError("no Vegas workflow run found")
+        if last.get("status") != "completed" or last.get("conclusion") != "success":
+            raise ValueError(
+                f"latest Vegas run is not successful: "
+                f"status={last.get('status')} conclusion={last.get('conclusion')}"
+            )
+        if last.get("created_at"):
+            started = datetime.fromisoformat(
+                last["created_at"].replace("Z", "+00:00")
+            ).astimezone(CST)
             if generated < started - timedelta(minutes=2):
                 raise ValueError("signals.json predates the latest Vegas scan run")
         return original
-    except Exception as e: error = e
+    except Exception as exc:
+        error = exc
+
+    # A recovery-triggered Vegas run must never recursively start another
+    # recovery chain. Its failure is reported once and then terminates.
+    if recovery_event:
+        raise RuntimeError(f"Vegas recovery run failed; automatic recovery stopped: {error}") from error
+
     previous_generated = None
     if original:
-        try: previous_generated = parse_time(original.get("generated_at"))
-        except Exception: pass
+        try:
+            previous_generated = parse_time(original.get("generated_at"))
+        except Exception:
+            pass
     previous_id = last.get("id", 0) if last else 0
-    for attempt in range(1, RESCAN_TIMES+1):
+    for attempt in range(1, RESCAN_TIMES + 1):
         try:
             print(f"Recovery scan {attempt}/{RESCAN_TIMES}")
             return rescan(previous_id, previous_generated)
-        except Exception as e:
-            print(f"Recovery scan {attempt} failed: {e}", file=sys.stderr)
+        except Exception as exc:
+            print(f"Recovery scan {attempt} failed: {exc}", file=sys.stderr)
             latest = latest_run()
-            if latest: previous_id = latest.get("id", previous_id)
+            if latest:
+                previous_id = latest.get("id", previous_id)
     raise RuntimeError(f"Vegas incomplete after 2 recovery scans; initial error: {error}")
 
 def slot_key(generated):
@@ -222,15 +269,19 @@ def push(body):
     try:
         r = requests.get(url, params={"group":"Vegas Signal","level":"active"}, timeout=(10,25))
     except requests.RequestException as e: raise UncertainDelivery(str(e)) from e
-    if r.status_code >= 500: raise UncertainDelivery(f"Bark HTTP {r.status_code}")
-    r.raise_for_status()
+    if r.status_code in (408, 429) or r.status_code >= 500:
+        raise UncertainDelivery(f"Bark HTTP {r.status_code}")
+    if r.status_code >= 400:
+        raise RuntimeError(f"Bark rejected: HTTP {r.status_code} {r.text[:300]}")
     try: payload = r.json()
-    except ValueError as e: raise RuntimeError("Bark response is not JSON") from e
-    if payload.get("code") != 200: raise RuntimeError(f"Bark rejected: {payload}")
+    except ValueError as e: raise UncertainDelivery("Bark returned a non-JSON response after request") from e
+    if not isinstance(payload, dict) or payload.get("code") != 200:
+        raise RuntimeError(f"Bark rejected: {payload!r}")
     return True
 
 def failure_notice(state, slot):
-    if slot in state["failure_slots"] or slot in state["uncertain_alerts"]: return
+    prior = state["uncertain_alerts"].get(slot)
+    if slot in state["failure_slots"] or (prior and prior.get("body") == SCAN_FAILED): return
     try: push(SCAN_FAILED)
     except UncertainDelivery as e:
         state["uncertain_alerts"][slot] = {"ts":int(time.time()),"body":SCAN_FAILED}
@@ -238,17 +289,48 @@ def failure_notice(state, slot):
     state["failure_slots"].append(slot); save_state(state)
 
 def main():
-    state = load_state(); prune(state)
     try:
+        state = load_state()
+    except Exception as exc:
+        print(f"STATE INITIALIZATION FAILED: {exc}", file=sys.stderr)
+        if BARK_KEY:
+            try: push(SCAN_FAILED)
+            except Exception as notify_error: print(f"Startup failure notice unavailable: {notify_error}", file=sys.stderr)
+        raise
+    prune(state)
+    # Dedicated Beijing 00:05 reset: clear only the daily signal set, without
+    # scanning Vegas or sending a notification.
+    if os.environ.get("GITHUB_EVENT_NAME") == "schedule" and os.environ.get("GITHUB_EVENT_SCHEDULE") == "5 16 * * *":
+        today = datetime.now(CST).date().isoformat()
+        state["daily_date"] = today
+        state["daily_signals"] = {}
+        state["pending_signals"] = {}
+        save_state(state)
+        print(f"Daily signal state reset for {today}")
+        return
+    try:
+        if not SCANNER_TOKEN:
+            raise RuntimeError("SCANNER_TOKEN secret is missing")
+        if not BARK_KEY:
+            raise RuntimeError("BARK_KEY secret is missing (BARK_DEVICE_KEY is also accepted)")
         result = acquire_result()
         generated = validate(result)
     except Exception as e:
         slot = datetime.now(CST).strftime("%Y-%m-%d-%H")
         print(f"SCAN FAILED: {e}", file=sys.stderr)
-        failure_notice(state, slot); save_state(state); raise
+        if BARK_KEY:
+            failure_notice(state, slot)
+        save_state(state)
+        raise
     slot = slot_key(generated)
     signals = result["signals"]
     today = datetime.now(CST).date().isoformat()
+    previous_generated = state.get("last_pushed_generated_at")
+    if previous_generated:
+        previous_time = parse_time(previous_generated)
+        if generated <= previous_time:
+            print(f"Stale or duplicate Vegas result rejected: {result['generated_at']} <= {previous_generated}")
+            return
 
     # Migrate the previous ID-based state once, preserving today's known signals.
     if state["daily_date"] is None:
@@ -277,12 +359,6 @@ def main():
     for item in signals:
         state["daily_signals"][item["id"]] = item["symbol"]
     fresh = [item for item in signals if item["id"] not in previous_ids]
-
-    # Deduplicate duplicate Bark invocations for the same Vegas scan, not repeated signal IDs.
-    if state.get("last_pushed_generated_at") == result["generated_at"]:
-        print(f"Vegas scan already notified: {result['generated_at']}")
-        save_state(state)
-        return
 
     if not state["daily_signals"]:
         if slot in state["no_signal_slots"]:
