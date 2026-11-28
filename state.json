@@ -38,7 +38,8 @@
     "2026-11-27-08",
     "2026-11-28-manual-0506",
     "2026-11-28-08",
-    "2026-11-28-manual-1214"
+    "2026-11-28-manual-1214",
+    "2026-11-28-16"
   ],
   "failure_slots": [
     "2026-11-24-18",
@@ -48,6 +49,6 @@
   "baseline_generated_at": "2026-11-24 18:51:36 (UTC+8)",
   "daily_date": "2026-11-28",
   "daily_signals": {},
-  "last_pushed_generated_at": "2026-11-28 12:14:11 (UTC+8)",
+  "last_pushed_generated_at": "2026-11-28 15:37:28 (UTC+8)",
   "pending_signals": {}
 }
